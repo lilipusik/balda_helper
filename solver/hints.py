@@ -21,13 +21,6 @@ class SuggestedMove:
         return len(self.word)
 
 
-@dataclass(frozen=True, slots=True)
-class _LeftPart:
-    text_before: str
-    path_before: tuple[Cell, ...]
-    used_keys: frozenset[tuple[int, int]]
-
-
 class BaldaHintSolver:
     __slots__ = ("dictionary",)
 
@@ -44,16 +37,18 @@ class BaldaHintSolver:
         limit: int | None = 100,
         excluded_words: set[str] | None = None,
     ) -> list[SuggestedMove]:
-
-        suggestions: dict[tuple[int, int, str, str], SuggestedMove] = {}
-
         if excluded_words is None:
             excluded_words = set()
         else:
             excluded_words = {normalize_word(word) for word in excluded_words}
 
-        empty_cells = board.empty_cells()
         neighbors_cache = board.build_neighbors_cache(diagonals)
+        empty_cells = board.empty_cells()
+
+        suggestions: dict[
+            tuple[str, int, int, str],
+            SuggestedMove,
+        ] = {}
 
         for placed_cell in empty_cells:
             for letter in alphabet:
@@ -62,35 +57,20 @@ class BaldaHintSolver:
                 if len(letter) != 1:
                     continue
 
-                moves = self._find_moves_for_letter(
+                self._find_moves_for_virtual_letter(
                     board=board,
                     placed_cell=placed_cell,
                     letter=letter,
                     neighbors_cache=neighbors_cache,
                     min_length=min_length,
+                    excluded_words=excluded_words,
+                    suggestions=suggestions,
                 )
-
-                for move in moves:
-                    if move.word in excluded_words:
-                        continue
-
-                    key = (
-                        move.placed_cell.row,
-                        move.placed_cell.col,
-                        move.letter,
-                        move.word,
-                    )
-
-                    old_move = suggestions.get(key)
-
-                    if old_move is None or move.score > old_move.score:
-                        suggestions[key] = move
 
         result = list(suggestions.values())
 
         result.sort(
             key=lambda move: (
-                -move.score,
                 -move.length,
                 move.word,
                 move.placed_cell.row,
@@ -99,12 +79,9 @@ class BaldaHintSolver:
             )
         )
 
-        if limit is not None:
-            result = result[:limit]
-
         return result
 
-    def _find_moves_for_letter(
+    def _find_moves_for_virtual_letter(
         self,
         *,
         board: Board,
@@ -112,181 +89,101 @@ class BaldaHintSolver:
         letter: str,
         neighbors_cache: dict[tuple[int, int], tuple[Cell, ...]],
         min_length: int,
-    ) -> list[SuggestedMove]:
-        found: dict[str, SuggestedMove] = {}
+        excluded_words: set[str],
+        suggestions: dict[tuple[str, int, int, str], SuggestedMove],
+    ) -> None:
+        for row, col, current_letter in board.iter_cells():
+            is_placed_cell = (
+                row == placed_cell.row
+                and col == placed_cell.col
+            )
 
-        reverse_start_node = self.dictionary.reverse_trie.step(
-            self.dictionary.reverse_trie.root,
-            letter,
-        )
+            if is_placed_cell:
+                start_letter = letter
+            else:
+                start_letter = current_letter
 
-        if reverse_start_node is None:
-            return []
-
-        left_parts = self._collect_left_parts(
-            board=board,
-            placed_cell=placed_cell,
-            letter=letter,
-            reverse_node=reverse_start_node,
-            neighbors_cache=neighbors_cache,
-        )
-
-        for left_part in left_parts:
-            prefix = left_part.text_before + letter
-
-            forward_node = self.dictionary.trie.follow(prefix)
-
-            if forward_node is None:
+            if not start_letter:
                 continue
 
-            start_path = left_part.path_before + (placed_cell,)
-            used = set(left_part.used_keys)
+            start_node = self.dictionary.trie.step(
+                self.dictionary.trie.root,
+                start_letter,
+            )
 
-            self._extend_right(
+            if start_node is None:
+                continue
+
+            start_cell = Cell(row, col)
+
+            self._dfs(
                 board=board,
-                current_cell=placed_cell,
+                current_cell=start_cell,
                 placed_cell=placed_cell,
-                letter=letter,
-                node=forward_node,
-                current_word=prefix,
-                path=start_path,
-                used=used,
-                found=found,
+                virtual_letter=letter,
+                node=start_node,
+                current_word=start_letter,
+                path=[start_cell],
+                used={(row, col)},
+                used_placed_cell=is_placed_cell,
                 neighbors_cache=neighbors_cache,
                 min_length=min_length,
+                excluded_words=excluded_words,
+                suggestions=suggestions,
             )
 
-        return list(found.values())
-
-    def _collect_left_parts(
-        self,
-        *,
-        board: Board,
-        placed_cell: Cell,
-        letter: str,
-        reverse_node: TrieNode,
-        neighbors_cache: dict[tuple[int, int], tuple[Cell, ...]],
-    ) -> list[_LeftPart]:
-        result: list[_LeftPart] = []
-
-        placed_key = (placed_cell.row, placed_cell.col)
-
-        start_part = _LeftPart(
-            text_before="",
-            path_before=(),
-            used_keys=frozenset({placed_key}),
-        )
-
-        result.append(start_part)
-
-        self._dfs_left(
-            board=board,
-            current_cell=placed_cell,
-            reverse_node=reverse_node,
-            text_before="",
-            path_before=(),
-            used={placed_key},
-            result=result,
-            neighbors_cache=neighbors_cache,
-        )
-
-        return result
-
-    def _dfs_left(
-        self,
-        *,
-        board: Board,
-        current_cell: Cell,
-        reverse_node: TrieNode,
-        text_before: str,
-        path_before: tuple[Cell, ...],
-        used: set[tuple[int, int]],
-        result: list[_LeftPart],
-        neighbors_cache: dict[tuple[int, int], tuple[Cell, ...]],
-    ) -> None:
-        # +1 потому что поставленная буква уже есть в слове.
-        if len(text_before) + 1 >= self.dictionary.max_word_length:
-            return
-
-        for previous_cell in neighbors_cache[(current_cell.row, current_cell.col)]:
-            key = (previous_cell.row, previous_cell.col)
-
-            if key in used:
-                continue
-
-            previous_letter = board.get(previous_cell.row, previous_cell.col)
-
-            # Влево от новой буквы можно идти только по уже существующим буквам.
-            if not previous_letter:
-                continue
-
-            next_reverse_node = self.dictionary.reverse_trie.step(
-                reverse_node,
-                previous_letter,
-            )
-
-            if next_reverse_node is None:
-                continue
-
-            used.add(key)
-
-            new_text_before = previous_letter + text_before
-            new_path_before = (previous_cell,) + path_before
-
-            result.append(
-                _LeftPart(
-                    text_before=new_text_before,
-                    path_before=new_path_before,
-                    used_keys=frozenset(used),
-                )
-            )
-
-            self._dfs_left(
-                board=board,
-                current_cell=previous_cell,
-                reverse_node=next_reverse_node,
-                text_before=new_text_before,
-                path_before=new_path_before,
-                used=used,
-                result=result,
-                neighbors_cache=neighbors_cache,
-            )
-
-            used.remove(key)
-
-    def _extend_right(
+    def _dfs(
         self,
         *,
         board: Board,
         current_cell: Cell,
         placed_cell: Cell,
-        letter: str,
+        virtual_letter: str,
         node: TrieNode,
         current_word: str,
-        path: tuple[Cell, ...],
+        path: list[Cell],
         used: set[tuple[int, int]],
-        found: dict[str, SuggestedMove],
+        used_placed_cell: bool,
         neighbors_cache: dict[tuple[int, int], tuple[Cell, ...]],
         min_length: int,
+        excluded_words: set[str],
+        suggestions: dict[tuple[str, int, int, str], SuggestedMove],
     ) -> None:
         if len(current_word) > self.dictionary.max_word_length:
             return
 
-        if node.is_word and len(current_word) >= min_length:
-            score = self._score_word(current_word)
-
+        if (
+            node.is_word
+            and used_placed_cell
+            and len(current_word) >= min_length
+            and current_word not in excluded_words
+        ):
             move = SuggestedMove(
                 placed_cell=placed_cell,
-                letter=letter,
+                letter=virtual_letter,
                 word=current_word,
-                path=path,
-                score=score,
+                path=tuple(path),
+                score=self._score_word(current_word),
             )
 
-            old_move = found.get(current_word)
+            # Вариант постановки считается уникальным по:
+            # слово + строка + колонка + буква.
+            #
+            # Если одно и то же слово через ту же новую букву можно прочитать
+            # несколькими путями, оставляем первый путь.
+            # Для интерфейса это обычно правильно: пользователю важнее,
+            # куда поставить букву.
+            key = (
+                current_word,
+                placed_cell.row,
+                placed_cell.col,
+                virtual_letter,
+            )
+
+            old_move = suggestions.get(key)
 
             if old_move is None or move.score > old_move.score:
-                found[current_word] = move
+                suggestions[key] = move
 
         for next_cell in neighbors_cache[(current_cell.row, current_cell.col)]:
             key = (next_cell.row, next_cell.col)
@@ -294,9 +191,17 @@ class BaldaHintSolver:
             if key in used:
                 continue
 
-            next_letter = board.get(next_cell.row, next_cell.col)
+            is_placed_cell = (
+                next_cell.row == placed_cell.row
+                and next_cell.col == placed_cell.col
+            )
 
-            # Справа от новой буквы тоже можно идти только по уже существующим буквам.
+            if is_placed_cell:
+                next_letter = virtual_letter
+            else:
+                next_letter = board.get(next_cell.row, next_cell.col)
+
+            # Нельзя ходить по другим пустым клеткам.
             if not next_letter:
                 continue
 
@@ -306,21 +211,25 @@ class BaldaHintSolver:
                 continue
 
             used.add(key)
+            path.append(next_cell)
 
-            self._extend_right(
+            self._dfs(
                 board=board,
                 current_cell=next_cell,
                 placed_cell=placed_cell,
-                letter=letter,
+                virtual_letter=virtual_letter,
                 node=next_node,
                 current_word=current_word + next_letter,
-                path=path + (next_cell,),
+                path=path,
                 used=used,
-                found=found,
+                used_placed_cell=used_placed_cell or is_placed_cell,
                 neighbors_cache=neighbors_cache,
                 min_length=min_length,
+                excluded_words=excluded_words,
+                suggestions=suggestions,
             )
 
+            path.pop()
             used.remove(key)
 
     @staticmethod

@@ -349,9 +349,9 @@ class MainWindow(QMainWindow):
         self.min_length_spin.setValue(3)
 
         self.limit_spin = QSpinBox()
-        self.limit_spin.setRange(10, 1000)
-        self.limit_spin.setValue(100)
-        self.limit_spin.setSingleStep(10)
+        self.limit_spin.setRange(10, 10000)
+        self.limit_spin.setValue(500)
+        self.limit_spin.setSingleStep(50)
 
         settings_row.addWidget(self._labeled_widget("Размер", self.size_combo))
         settings_row.addWidget(self._labeled_widget("Мин. длина", self.min_length_spin))
