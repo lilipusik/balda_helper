@@ -19,7 +19,7 @@ class SolverThread(QThread):
         grid: list[list[str]],
         diagonals: bool,
         min_length: int,
-        limit: int,
+        limit: int | None,
         excluded_words: set[str],
     ) -> None:
         super().__init__()

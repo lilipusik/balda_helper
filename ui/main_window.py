@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from solver.board import Board
 from solver.dictionary import BaldaDictionary, normalize_word
 from solver.hints import BaldaHintSolver, SuggestedMove
+from solver.manual_word import find_manual_word_moves
 from services.definitions import DefinitionService, DefinitionResult
 
 from ui.models import UsedWordEntry
@@ -248,26 +249,29 @@ class MainWindow(QMainWindow):
         matching_moves = self._find_manual_moves_for_word_at_cell(word, row, col)
 
         if not matching_moves:
-            if self.pending_external_word_is_custom:
-                letter = self._ask_manual_letter_for_external_word(word)
-
-                if letter is None:
-                    return
-
-                self._apply_manual_external_word(
-                    word=word,
-                    row=row,
-                    col=col,
-                    letter=letter,
-                )
-                return
-
-            QMessageBox.warning(
+            reply = QMessageBox.question(
                 self,
                 "Не удалось определить букву",
-                f"Я не смог найти вариант слова «{word}», "
-                f"где новая буква ставится в клетку ({row + 1}, {col + 1}).\n\n"
-                f"Проверьте слово, поле, диагонали и выбранную клетку.",
+                f"Я не смог автоматически найти путь для слова «{word}» "
+                f"с новой буквой в клетке ({row + 1}, {col + 1}).\n\n"
+                f"Хотите указать букву вручную?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+            letter = self._ask_manual_letter_for_external_word(word)
+
+            if letter is None:
+                return
+
+            self._apply_manual_external_word(
+                word=word,
+                row=row,
+                col=col,
+                letter=letter,
             )
             return
 
@@ -292,30 +296,16 @@ class MainWindow(QMainWindow):
         row: int,
         col: int,
     ) -> list[SuggestedMove]:
-        if self.dictionary is None:
-            return []
-
         grid = self.board_widget.grid_values()
         board = Board(grid)
-        solver = BaldaHintSolver(self.dictionary)
 
-        moves = solver.find_best_moves(
-            board,
+        return find_manual_word_moves(
+            board=board,
+            word=word,
+            placed_row=row,
+            placed_col=col,
             diagonals=self.diagonal_checkbox.isChecked(),
-            min_length=self.min_length_spin.value(),
-            limit=None,
-            excluded_words=set(),
         )
-
-        return [
-            move
-            for move in moves
-            if (
-                normalize_word(move.word) == word
-                and move.placed_cell.row == row
-                and move.placed_cell.col == col
-            )
-        ]
     
     def _build_ui(self) -> None:
         root = QWidget()
@@ -833,7 +823,7 @@ class MainWindow(QMainWindow):
             grid=grid,
             diagonals=self.diagonal_checkbox.isChecked(),
             min_length=self.min_length_spin.value(),
-            limit=self.limit_spin.value(),
+            limit=None,
             excluded_words=self._used_words_set(),
         )
 
@@ -908,12 +898,14 @@ class MainWindow(QMainWindow):
             key=self._word_sort_key,
         )
 
+        shown_words = sorted_words[: self.limit_spin.value()]
+
         move_index_by_id = {
             id(move): index
             for index, move in enumerate(self.current_moves)
         }
 
-        for word_index, word in enumerate(sorted_words):
+        for word_index, word in enumerate(shown_words):
             variants = grouped[word]
             length = len(word)
 
